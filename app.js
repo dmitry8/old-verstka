@@ -1,5 +1,5 @@
 import { EditorState, StateField, StateEffect, RangeSet } from '@codemirror/state';
-import { EditorView, Decoration, GutterMarker, WidgetType, lineNumbers, lineNumberMarkers,
+import { EditorView, Decoration, GutterMarker, lineNumbers, lineNumberMarkers,
          highlightActiveLine, highlightActiveLineGutter, keymap, placeholder } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { html } from '@codemirror/lang-html';
@@ -30,19 +30,7 @@ import { setDiagnostics } from '@codemirror/lint';
     constructor(cls) { super(); this.elementClass = cls; }
   }
 
-  // серый блок высотой в N строк, вставляется между строками для выравнивания с правым полем
-  class PadWidget extends WidgetType {
-    constructor(count) { super(); this.count = count; }
-    eq(other) { return other.count === this.count; }
-    toDOM() {
-      const el = document.createElement('div');
-      el.className = 'cm-pad';
-      el.style.height = (this.count * 1.5) + 'em';
-      return el;
-    }
-    get estimatedHeight() { return this.count * 19.5; }
-    ignoreEvent() { return true; }
-  }
+
 
   const EMPTY = { deco: Decoration.none, gutter: RangeSet.empty };
 
@@ -59,16 +47,11 @@ import { setDiagnostics } from '@codemirror/lint';
     ],
   });
 
-    function applyLeftMarks(marks, diagnostics, pads) {
+    function applyLeftMarks(marks, diagnostics) {
     const doc = view.state.doc;
     const valid = marks.filter((m) => m.to > m.from && m.to <= doc.length);
     const decos = valid.map((m) => Decoration.mark({ class: 'cm-' + m.cls }).range(m.from, m.to));
 
-    // заглушки после строк, где справа стало больше строк
-    for (const p of pads || []) {
-      const lineNo = Math.min(p.afterLine + 1, doc.lines);
-      decos.push(Decoration.widget({ widget: new PadWidget(p.count), block: true, side: 1 }).range(doc.line(lineNo).to));
-    }
 
     const PRIORITY = ['hl-error', 'hl-changed', 'hl-removed'];
     const perLine = new Map();
@@ -165,18 +148,366 @@ import { setDiagnostics } from '@codemirror/lint';
     return { block: true, indent };
   }
 
+  // Блоки <div class="mobile-table"> … </div> — удаляются целиком.
+  // Парный </div> ищем с учётом вложенных div. Если не нашли — помечаем как ошибку.
+  function findDeletableBlocks(html) {
+    const blocks = [];
+    const re = /<div\b/gi;
+    let m;
+    while ((m = re.exec(html))) {
+      const lt = m.index;
+      let i = lt + 1, inQuote = null;
+      while (i < html.length) {
+        const ch = html[i];
+        if (inQuote) { if (ch === inQuote) inQuote = null; }
+        else { if (ch === '"' || ch === "'") inQuote = ch; else if (ch === '>') break; }
+        i++;
+      }
+      if (i >= html.length) break;
+      const openText = html.slice(lt, i + 1);
+
+      const cm = openText.match(/\bclass\s*=\s*("([^"]*)"|'([^']*)')/);
+      if (!cm || !(cm[2] !== undefined ? cm[2] : cm[3]).split(/\s+/).includes('mobile-table')) {
+        re.lastIndex = i + 1;
+        continue;
+      }
+
+      // парный </div> с учётом вложенности
+      let depth = 1, end = -1;
+      const tagRe = /<(\/?)div\b/gi;
+      tagRe.lastIndex = i + 1;
+      let t;
+      while ((t = tagRe.exec(html))) {
+        depth += t[1] ? -1 : 1;
+        if (depth === 0) { end = t.index; break; }
+      }
+      if (end === -1) { blocks.push({ start: lt, end: i + 1, error: true }); re.lastIndex = i + 1; continue; }
+
+      let k = end;
+      while (k < html.length && html[k] !== '>') k++;
+      let s = lt, e = Math.min(k + 1, html.length);
+
+      // если блок стоит на своей строке один — забираем вместе с отступом и переносом строки
+      const lineStart = html.lastIndexOf('\n', s - 1) + 1;
+      if (html.slice(lineStart, s).trim() === '') s = lineStart;
+      const nl = html.indexOf('\n', e);
+      const rest = html.slice(e, nl === -1 ? html.length : nl);
+      if (nl !== -1 && rest.trim() === '') e = nl + 1;
+
+      blocks.push({ start: s, end: e, error: false });
+      re.lastIndex = Math.min(k + 1, html.length);
+    }
+    return blocks;
+  }
+
   // Главный трансформер
   function fix(html) {
-    const replacements = []; // {start,end, newText, leftHighlights[], rightHighlights[], error?}
+    const replacements = []; // {start,end, newText, kind?, error?, message?}
     const msgs = [];
     let pos = 0;
+
+    // Правило 2: блоки <div class="mobile-table"> удаляем целиком
+    const deletable = findDeletableBlocks(html);
+    for (const b of deletable) {
+      if (b.error) {
+        replacements.push({
+          start: b.start, end: b.end, newText: html.slice(b.start, b.end), kind: 'delete', error: true,
+          message: `Не найден парный </div> для <div class="mobile-table"> на позиции ${b.start} — блок пропущен.`
+        });
+      } else {
+        replacements.push({ start: b.start, end: b.end, newText: '', kind: 'delete', error: false });
+      }
+    }
+    const deletedBlockAt = (p) => deletable.find((b) => !b.error && p >= b.start && p < b.end);
 
     while (pos < html.length) {
       const lt = html.indexOf('<', pos);
       if (lt === -1) break;
 
-      // быстро проверяем <img или <image
+      // внутри удаляемого блока ничего не ищем — он уйдёт целиком
+      const del = deletedBlockAt(lt);
+      if (del) { pos = del.end; continue; }
+
       const head = html.slice(lt, lt + 10).toLowerCase();
+
+      // Правило 3: <table class="desktop-table" …> → <table>, все атрибуты долой
+      if (/^<table\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const tOpenEnd = j + 1;
+        const tOpenText = html.slice(lt, tOpenEnd);
+        const tAttrs = parseAttrs(tOpenText);
+        const cls = tAttrs.find(a => a.name === 'class');
+        const isDesktop = cls && cls.value.split(/\s+/).includes('desktop-table');
+        if (isDesktop && tAttrs.length > 0) {
+          replacements.push({ start: lt, end: tOpenEnd, newText: '<table>', kind: 'strip', attrs: tAttrs, error: false });
+        }
+        pos = tOpenEnd;
+        continue;
+      }
+
+      // Правило 4: <details title="X" opentitle="Y"> → <details> + <title>X</title>
+      if (/^<details\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const dOpenEnd = j + 1;
+        const dOpenText = html.slice(lt, dOpenEnd);
+        const dAttrs = parseAttrs(dOpenText);
+        const titleAttr = dAttrs.find(a => a.name === 'title');
+        const openTitleAttr = dAttrs.find(a => a.name === 'opentitle');
+
+        if (!titleAttr && !openTitleAttr) { pos = dOpenEnd; continue; } // уже новый формат
+
+        // парный </details> с учётом вложенности
+        let depth = 1, closeStart = -1;
+        const dRe = /<(\/?)details\b/gi;
+        dRe.lastIndex = dOpenEnd;
+        let t;
+        while ((t = dRe.exec(html))) {
+          depth += t[1] ? -1 : 1;
+          if (depth === 0) { closeStart = t.index; break; }
+        }
+        if (closeStart === -1) {
+          replacements.push({ start: lt, end: dOpenEnd, newText: dOpenText, error: true,
+            message: 'Не найден парный </details> — элемент пропущен.' });
+          pos = dOpenEnd;
+          continue;
+        }
+        const dInner = html.slice(dOpenEnd, closeStart);
+        if (titleAttr && /<title[\s>]/i.test(dInner)) {
+          replacements.push({ start: lt, end: dOpenEnd, newText: dOpenText, error: true,
+            message: 'Конфликт: атрибут title и тег <title> одновременно — элемент пропущен.' });
+          pos = dOpenEnd;
+          continue;
+        }
+
+        let dNewOpen = dOpenText;
+        if (titleAttr) dNewOpen = dNewOpen.replace(/\s+title\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
+        if (openTitleAttr) dNewOpen = dNewOpen.replace(/\s+opentitle\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
+
+        let dNewText = dNewOpen;
+        if (titleAttr && titleAttr.value.trim() !== '') {
+          const { indent } = getLineIndent(html, lt);
+          const startsOnNewLine = /^[ \t]*\n/.test(dInner);
+          dNewText += (startsOnNewLine ? '\n' + indent + '  ' : '') + '<title>' + titleAttr.value + '</title>';
+        }
+
+        replacements.push({ start: lt, end: dOpenEnd, newText: dNewText, kind: 'details', titleAttr, openTitleAttr, error: false });
+        pos = dOpenEnd;
+        continue;
+      }
+
+      // Правило 5: <hl title="X"> → <hl> + <h3>X</h3> (сущности &lt;/&gt; раскодируем в теги)
+      if (/^<hl\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const hOpenEnd = j + 1;
+        const hOpenText = html.slice(lt, hOpenEnd);
+        const hAttrs = parseAttrs(hOpenText);
+        const hTitleAttr = hAttrs.find(a => a.name === 'title');
+        const bubbleAttr = hAttrs.find(a => a.name === 'isbuble');
+
+        // Правило 8: <hl isbuble="true">…</hl> → <bubble>…</bubble>
+        if (bubbleAttr) {
+          if (hTitleAttr) {
+            replacements.push({ start: lt, end: hOpenEnd, newText: hOpenText, error: true,
+              message: 'У <hl> одновременно isbuble и title — элемент пропущен.' });
+            pos = hOpenEnd;
+            continue;
+          }
+          let bDepth = 1, bClose = null;
+          const bRe = /<(\/?)hl\b[^>]*>/gi;
+          bRe.lastIndex = hOpenEnd;
+          let bt;
+          while ((bt = bRe.exec(html))) {
+            bDepth += bt[1] ? -1 : 1;
+            if (bDepth === 0) { bClose = { start: bt.index, end: bt.index + bt[0].length, text: bt[0] }; break; }
+          }
+          if (!bClose) {
+            replacements.push({ start: lt, end: hOpenEnd, newText: hOpenText, error: true,
+              message: 'Не найден парный </hl> — элемент пропущен.' });
+            pos = hOpenEnd;
+            continue;
+          }
+          const bNewOpen = hOpenText
+            .replace(/\s+isbuble\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '')
+            .replace(/^<hl\b/i, '<bubble');
+          const bInner = html.slice(hOpenEnd, bClose.start);
+          const bNewText = bNewOpen + bInner + '</bubble>';
+          replacements.push({ start: lt, end: bClose.end, newText: bNewText, kind: 'bubble', bubbleAttr,
+            closeOffset: bClose.start - lt, closeText: bClose.text, error: false });
+          pos = bClose.end;
+          continue;
+        }
+
+        if (!hTitleAttr) { pos = hOpenEnd; continue; } // уже новый формат
+
+        let depth = 1, closeStart = -1;
+        const hRe = /<(\/?)hl\b/gi;
+        hRe.lastIndex = hOpenEnd;
+        let t;
+        while ((t = hRe.exec(html))) {
+          depth += t[1] ? -1 : 1;
+          if (depth === 0) { closeStart = t.index; break; }
+        }
+        if (closeStart === -1) {
+          replacements.push({ start: lt, end: hOpenEnd, newText: hOpenText, error: true,
+            message: 'Не найден парный </hl> — элемент пропущен.' });
+          pos = hOpenEnd;
+          continue;
+        }
+        const hInner = html.slice(hOpenEnd, closeStart);
+        if (/<h3[\s>]/i.test(hInner)) {
+          replacements.push({ start: lt, end: hOpenEnd, newText: hOpenText, error: true,
+            message: 'Конфликт: атрибут title и тег <h3> одновременно — элемент пропущен.' });
+          pos = hOpenEnd;
+          continue;
+        }
+
+        let hNewText = hOpenText.replace(/\s+title\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
+        if (hTitleAttr.value.trim() !== '') {
+          const decoded = hTitleAttr.value
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+          const { indent } = getLineIndent(html, lt);
+          const startsOnNewLine = /^[ \t]*\n/.test(hInner);
+          hNewText += (startsOnNewLine ? '\n' + indent + '  ' : '') + '<h3>' + decoded + '</h3>';
+        }
+
+        replacements.push({ start: lt, end: hOpenEnd, newText: hNewText, kind: 'hl', titleAttr: hTitleAttr, error: false });
+        pos = hOpenEnd;
+        continue;
+      }
+
+     
+
+      // Правило 6: <author desc="X"></author> → <author><description>X</description></author>
+      if (/^<author\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const aOpenEnd = j + 1;
+        const aOpenText = html.slice(lt, aOpenEnd);
+        const aSelfClosing = /\/\s*>$/.test(aOpenText);
+        const descAttr = parseAttrs(aOpenText).find(a => a.name === 'desc');
+        if (!descAttr) { pos = aOpenEnd; continue; } // уже новый формат
+
+        let aFullEnd = aOpenEnd, aInner = '';
+        if (!aSelfClosing) {
+          const closing = findClosingTag(html, aOpenEnd, 'author');
+          if (!closing) {
+            replacements.push({ start: lt, end: aOpenEnd, newText: aOpenText, error: true,
+              message: 'Не найден парный </author> — элемент пропущен.' });
+            pos = aOpenEnd;
+            continue;
+          }
+          aInner = html.slice(aOpenEnd, closing.start);
+          aFullEnd = closing.end;
+        }
+        if (/<description[\s>]/i.test(aInner)) {
+          replacements.push({ start: lt, end: aFullEnd, newText: html.slice(lt, aFullEnd), error: true,
+            message: 'Конфликт: атрибут desc и тег <description> одновременно — элемент пропущен.' });
+          pos = aFullEnd;
+          continue;
+        }
+        if (aInner.trim() !== '') {
+          replacements.push({ start: lt, end: aFullEnd, newText: html.slice(lt, aFullEnd), error: true,
+            message: 'Внутри <author> с desc="…" есть вложенный контент — элемент пропущен.' });
+          pos = aFullEnd;
+          continue;
+        }
+
+        let aNewOpen = aOpenText
+          .replace(/\s+desc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '')
+          .replace(/\s*\/\s*>$/, '>');
+        let aNewText;
+        if (descAttr.value.trim() === '') {
+          aNewText = aNewOpen + '</author>';
+        } else {
+          const decoded = descAttr.value
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+          const { block, indent } = isBlockContext(html, lt, aFullEnd);
+          aNewText = block
+            ? aNewOpen + '\n' + indent + '  <description>\n' + indent + '    ' + decoded + '\n' + indent + '  </description>\n' + indent + '</author>'
+            : aNewOpen + '<description>' + decoded + '</description></author>';
+        }
+
+        replacements.push({ start: lt, end: aFullEnd, newText: aNewText, kind: 'author', descAttr, aSelfClosing, error: false });
+        pos = aFullEnd;
+        continue;
+      }
+
+        // Правило 7: <aside url="X">текст</aside> → <aside><a href="X">текст</a></aside>
+      if (/^<aside\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const sOpenEnd = j + 1;
+        const sOpenText = html.slice(lt, sOpenEnd);
+        const urlAttr = parseAttrs(sOpenText).find(a => a.name === 'url');
+        if (!urlAttr) { pos = sOpenEnd; continue; } // уже новый формат
+
+        const closing = findClosingTag(html, sOpenEnd, 'aside');
+        if (!closing) {
+          replacements.push({ start: lt, end: sOpenEnd, newText: sOpenText, error: true,
+            message: 'Не найден парный </aside> — элемент пропущен.' });
+          pos = sOpenEnd;
+          continue;
+        }
+        const sInner = html.slice(sOpenEnd, closing.start);
+        if (/<a[\s>]/i.test(sInner)) {
+          replacements.push({ start: lt, end: closing.end, newText: html.slice(lt, closing.end), error: true,
+            message: 'Внутри <aside> с url="…" уже есть ссылка <a> — элемент пропущен.' });
+          pos = closing.end;
+          continue;
+        }
+
+        const sNewOpen = sOpenText.replace(/\s+url\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
+        let sNewInner = sInner;
+        if (urlAttr.value.trim() !== '' && sInner.trim() !== '') {
+          // оборачиваем только сам текст, пробелы и переносы вокруг оставляем как были
+          const lead = sInner.match(/^\s*/)[0], trail = sInner.match(/\s*$/)[0];
+          const core = sInner.slice(lead.length, sInner.length - trail.length);
+          sNewInner = lead + '<a href="' + urlAttr.value + '">' + core + '</a>' + trail;
+        }
+        const sNewText = sNewOpen + sNewInner + closing.text;
+
+        replacements.push({ start: lt, end: closing.end, newText: sNewText, kind: 'aside', urlAttr,
+          linkAt: sNewOpen.length + sInner.match(/^\s*/)[0].length, hasLink: sNewInner !== sInner, error: false });
+        pos = closing.end;
+        continue;
+      }
+
+      // быстро проверяем <img или <image
       const isImg = head.startsWith('<img') && /<img\b/.test(head);
       const isImage = head.startsWith('<image') && /<image\b/.test(head);
       if (!isImg && !isImage) { pos = lt + 1; continue; }
@@ -204,11 +535,10 @@ import { setDiagnostics } from '@codemirror/lint';
         const closing = findClosingTag(html, openEnd, 'image');
         if (!closing) {
           // битая разметка - подсветим как ошибку и идем дальше
-          replacements.push({
-            start: lt, end: openEnd, newText: openText,
-            error: true, openText
+                   replacements.push({
+            start: lt, end: openEnd, newText: openText, error: true, openText,
+            message: `Не найден парный </image> — элемент пропущен.`
           });
-          msgs.push({ level: 'error', text: `Ошибка разметки: не найден </image> для тега на позиции ${lt}.` });
           pos = openEnd;
           continue;
         }
@@ -235,14 +565,14 @@ import { setDiagnostics } from '@codemirror/lint';
 
       // 8. корнер-кейсы -> ошибка, не трогаем, подсвечиваем
       if (captionAttr && hasInnerCaption) {
-        replacements.push({ start: lt, end: fullEnd, newText: html.slice(lt, fullEnd), error: true, openText, inner, closeText });
-        msgs.push({ level: 'error', text: `Конфликт: атрибут caption и тег <caption> одновременно на позиции ${lt} — пропускаем.` });
+              replacements.push({ start: lt, end: fullEnd, newText: html.slice(lt, fullEnd), error: true, openText, inner, closeText,
+          message: `Конфликт: атрибут caption и тег <caption> одновременно — элемент пропущен.` });
         pos = fullEnd;
         continue;
       }
       if (captionAttr && inner.trim() !== '') {
-        replacements.push({ start: lt, end: fullEnd, newText: html.slice(lt, fullEnd), error: true, openText, inner, closeText });
-        msgs.push({ level: 'error', text: `Внутри <image> с caption="..." найден вложенный контент на позиции ${lt} — пропускаем.` });
+                replacements.push({ start: lt, end: fullEnd, newText: html.slice(lt, fullEnd), error: true, openText, inner, closeText,
+          message: `Внутри <image> с caption="…" есть вложенный контент — элемент пропущен.` });
         pos = fullEnd;
         continue;
       }
@@ -331,31 +661,12 @@ import { setDiagnostics } from '@codemirror/lint';
 
     // Ошибки для всплывашек слева: error-сегменты и error-сообщения
     // собираются в одном порядке (по позиции в тексте), поэтому сопоставляем по индексу
-    const errorTexts = msgs.filter(m => m.level === 'error').map(m => m.text);
-    const diagnostics = marks
-      .filter(m => m.cls === 'hl-error')
-      .map((m, i) => ({ from: m.from, to: m.to, message: errorTexts[i] || 'Ошибка разметки — элемент пропущен.' }));
+        const diagnostics = replacements
+      .filter(r => r.error)
+      .sort((a, b) => a.start - b.start)
+      .map(r => ({ from: r.start, to: r.end, message: r.message || 'Ошибка разметки — элемент пропущен.' }));
 
-    // Заглушки для выравнивания полей: если замена добавила N строк справа,
-    // слева после этой строки вставляем N пустых строк (и наоборот).
-    // afterLine — номер строки (с нуля), после которой вставить; count — сколько.
-    const countNl = (s) => (s.match(/\n/g) || []).length;
-    const pads = { left: [], right: [] };
-    let shift = 0; // накопленный сдвиг строк между исходником и результатом
-    for (const r of [...replacements].sort((a, b) => a.start - b.start)) {
-      if (r.error) continue;
-      const oldLines = countNl(html.slice(r.start, r.end));
-      const newLines = countNl(r.newText);
-      const delta = newLines - oldLines;
-      if (delta !== 0) {
-        const srcEndLine = countNl(html.slice(0, r.end));
-        if (delta > 0) pads.left.push({ afterLine: srcEndLine, count: delta });
-        else pads.right.push({ afterLine: srcEndLine + shift + delta, count: -delta });
-      }
-      shift += delta;
-    }
-
-    return { output, left: leftSegments, right: rightSegments, marks, diagnostics, pads, messages: msgs };
+        return { output, left: leftSegments, right: rightSegments, marks, diagnostics, messages: msgs };
   }
 
   function buildLeftSegments(html, reps) {
@@ -382,13 +693,82 @@ import { setDiagnostics } from '@codemirror/lint';
     return segs;
   }
 
-    function splitLeftChunk(chunk, r) {
+  function splitLeftChunk(chunk, r) {
     if (r.error) return [{text: chunk, cls: 'hl-error'}];
+    if (r.kind === 'delete') return [{text: chunk, cls: 'hl-removed'}];
     const spans = []; // {from, to, cls} — позиции внутри chunk
 
-    // имя тега img → изменено
-    const nameStart = chunk.indexOf('<' + r.tagName);
-    if (nameStart !== -1 && r.tagName === 'img') spans.push({ from: nameStart + 1, to: nameStart + 4, cls: 'hl-changed' });
+     // таблица: все атрибуты удаляются
+    if (r.kind === 'strip') {
+      for (const a of r.attrs) spans.push({ from: a.start, to: a.end, cls: 'hl-removed' });
+    }
+
+    // bubble: имя тега hl → изменено (в обоих тегах), isbuble="…" → удалено целиком
+    if (r.kind === 'bubble') {
+      spans.push({ from: 1, to: 3, cls: 'hl-changed' });                       // <hl
+      spans.push({ from: r.bubbleAttr.start, to: r.bubbleAttr.end, cls: 'hl-removed' });
+      const nameInClose = r.closeText.search(/hl/i);                           // </hl>
+      if (nameInClose !== -1) {
+        spans.push({ from: r.closeOffset + nameInClose, to: r.closeOffset + nameInClose + 2, cls: 'hl-changed' });
+      }
+    }
+
+    // aside: url="…" → обёртка красным, адрес не трогаем (переезжает в href)
+    if (r.kind === 'aside' && r.urlAttr) {
+      const a = r.urlAttr, raw = a.raw, val = a.value;
+      const valIdx = val ? raw.indexOf(val, raw.indexOf('=')) : -1;
+      if (valIdx > 0) {
+        spans.push({ from: a.start, to: a.start + valIdx, cls: 'hl-removed' });
+        if (valIdx + val.length < raw.length) spans.push({ from: a.start + valIdx + val.length, to: a.end, cls: 'hl-removed' });
+      } else {
+        spans.push({ from: a.start, to: a.end, cls: 'hl-removed' });
+      }
+    }
+
+    // author: desc="…" → обёртка красным, текст описания не трогаем
+    if (r.kind === 'author' && r.descAttr) {
+      const a = r.descAttr, raw = a.raw, val = a.value;
+      const valIdx = val ? raw.indexOf(val, raw.indexOf('=')) : -1;
+      if (valIdx > 0) {
+        spans.push({ from: a.start, to: a.start + valIdx, cls: 'hl-removed' });
+        if (valIdx + val.length < raw.length) spans.push({ from: a.start + valIdx + val.length, to: a.end, cls: 'hl-removed' });
+      } else {
+        spans.push({ from: a.start, to: a.end, cls: 'hl-removed' });
+      }
+    }
+
+    // hl: title="…" → обёртка красным, текст заголовка не трогаем
+    if (r.kind === 'hl' && r.titleAttr) {
+      const a = r.titleAttr, raw = a.raw, val = a.value;
+      const valIdx = val ? raw.indexOf(val, raw.indexOf('=')) : -1;
+      if (valIdx > 0) {
+        spans.push({ from: a.start, to: a.start + valIdx, cls: 'hl-removed' });
+        if (valIdx + val.length < raw.length) spans.push({ from: a.start + valIdx + val.length, to: a.end, cls: 'hl-removed' });
+      } else {
+        spans.push({ from: a.start, to: a.end, cls: 'hl-removed' });
+      }
+    }
+
+    // details: title="…" → обёртка красным, текст не трогаем; opentitle — целиком
+    if (r.kind === 'details') {
+      if (r.titleAttr) {
+        const a = r.titleAttr, raw = a.raw, val = a.value;
+        const valIdx = val ? raw.indexOf(val, raw.indexOf('=')) : -1;
+        if (valIdx > 0) {
+          spans.push({ from: a.start, to: a.start + valIdx, cls: 'hl-removed' });
+          if (valIdx + val.length < raw.length) spans.push({ from: a.start + valIdx + val.length, to: a.end, cls: 'hl-removed' });
+        } else {
+          spans.push({ from: a.start, to: a.end, cls: 'hl-removed' });
+        }
+      }
+      if (r.openTitleAttr) spans.push({ from: r.openTitleAttr.start, to: r.openTitleAttr.end, cls: 'hl-removed' });
+    }
+
+        // имя тега img → изменено
+    if (r.tagName === 'img') {
+      const nameStart = chunk.indexOf('<img');
+      if (nameStart !== -1) spans.push({ from: nameStart + 1, to: nameStart + 4, cls: 'hl-changed' });
+    }
 
     // caption="…" → удалено, но сам текст подписи не красим (он переезжает)
     if (r.captionAttr) {
@@ -418,35 +798,94 @@ import { setDiagnostics } from '@codemirror/lint';
     return out;
   }
 
-  function buildRightSegments(output, html, reps) {
-    if (reps.length===0) return [{text: output}];
-    // для правой части подсвечиваем добавленные куски: <caption>, </caption>, </image>, и изменённое имя
-    // самый простой способ: пройдем по output и найдем вставленные newText
-    const good = reps.filter(r=>!r.error).sort((a,b)=> a.start - b.start);
-    // надо найти позиции newText в output - они идут по порядку, но из-за сдвигов проще идти по output слева направо и искать newText
-    let cur = 0;
+    function buildRightSegments(output, html, reps) {
+    const good = reps.filter(r => !r.error).sort((a, b) => a.start - b.start);
+    if (good.length === 0) return [{text: output}];
     const segs = [];
-    let searchFrom = 0;
+    let cur = 0;    // позиция в output
+    let shift = 0;  // накопленная разница длин между исходником и результатом
     for (const r of good) {
-      const idx = output.indexOf(r.newText, searchFrom);
-      if (idx === -1) continue;
+      const idx = r.start + shift;
       if (cur < idx) segs.push({text: output.slice(cur, idx)});
-      // внутри newText подсветим добавленные части
-      const parts = splitRightChunk(r.newText, r);
-      for (const p of parts) segs.push(p);
+      if (r.newText) for (const p of splitRightChunk(r.newText, r)) segs.push(p);
       cur = idx + r.newText.length;
-      searchFrom = cur;
+      shift += r.newText.length - (r.end - r.start);
     }
     if (cur < output.length) segs.push({text: output.slice(cur)});
-    // ошибки: в правой части тоже подсветим тот же chunk как hl-error (он не менялся)
-    for (const r of reps.filter(r=>r.error)) {
-      // найдем его в output (он там остался как был)
-      // уже учтён выше как часть "до/после", но если мы его пропустили - подсветим отдельно
-    }
-    return segs.length? segs : [{text: output}];
+    return segs;
   }
 
-  function splitRightChunk(newText, r) {
+   function splitRightChunk(newText, r) {
+    if (r.kind === 'strip') return [{text: '<'}, {text: 'table', cls: 'hl-changed'}, {text: '>'}];
+    if (r.kind === 'bubble') {
+      const c = newText.lastIndexOf('</bubble>');
+      return [
+        {text: '<'},
+        {text: 'bubble', cls: 'hl-changed'},
+        {text: newText.slice(7, c)},
+        {text: '</'},
+        {text: 'bubble', cls: 'hl-changed'},
+        {text: '>'},
+      ];
+    }
+    if (r.kind === 'aside') {
+      if (!r.hasLink) return [{text: newText}];
+      const o = r.linkAt;                              // начало <a href="…">
+      const oEnd = newText.indexOf('>', o) + 1;        // конец открывающего <a>
+      const c = newText.lastIndexOf('</a>');
+      if (o === -1 || oEnd === 0 || c === -1) return [{text: newText}];
+      // внутри <a href="…"> сам адрес не красим — он переехал без изменений
+      const hrefStart = o + '<a href="'.length;
+      const hrefEnd = hrefStart + r.urlAttr.value.length;
+      return [
+        {text: newText.slice(0, o)},
+        {text: newText.slice(o, hrefStart), cls: 'hl-added'},
+        {text: newText.slice(hrefStart, hrefEnd)},
+        {text: newText.slice(hrefEnd, oEnd), cls: 'hl-added'},
+        {text: newText.slice(oEnd, c)},
+        {text: '</a>', cls: 'hl-added'},
+        {text: newText.slice(c + 4)},
+      ];
+    }
+    if (r.kind === 'author') {
+      const o = newText.indexOf('<description>'), c = newText.indexOf('</description>');
+      const closeIdx = newText.lastIndexOf('</author>');
+      const out = [];
+      if (o === -1 || c === -1) {
+        out.push({text: newText.slice(0, closeIdx)});
+      } else {
+        out.push({text: newText.slice(0, o)});
+        out.push({text: '<description>', cls: 'hl-added'});
+        out.push({text: newText.slice(o + 13, c)});
+        out.push({text: '</description>', cls: 'hl-added'});
+        out.push({text: newText.slice(c + 14, closeIdx)});
+      }
+      // </author> был в исходнике — не подсвечиваем; появился из /> — подсвечиваем
+      out.push(r.aSelfClosing ? {text: '</author>', cls: 'hl-added'} : {text: '</author>'});
+      return out;
+    }
+    if (r.kind === 'hl') {
+      const o = newText.indexOf('<h3>'), c = newText.indexOf('</h3>');
+      if (o === -1 || c === -1) return [{text: newText}];
+      return [
+        {text: newText.slice(0, o)},
+        {text: '<h3>', cls: 'hl-added'},
+        {text: newText.slice(o + 4, c)},
+        {text: '</h3>', cls: 'hl-added'},
+        {text: newText.slice(c + 5)},
+      ];
+    }
+    if (r.kind === 'details') {
+      const o = newText.indexOf('<title>'), c = newText.indexOf('</title>');
+      if (o === -1 || c === -1) return [{text: newText}];
+      return [
+        {text: newText.slice(0, o)},
+        {text: '<title>', cls: 'hl-added'},
+        {text: newText.slice(o + 7, c)},
+        {text: '</title>', cls: 'hl-added'},
+        {text: newText.slice(c + 8)},
+      ];
+    }
     const out = [];
     // имя image если было img -> hl-changed
     const nameStart = newText.indexOf('<image');
@@ -519,13 +958,9 @@ import { setDiagnostics } from '@codemirror/lint';
   // --- render ---
   // Рисуем текст построчно + гуттер с номерами и маркерами правок.
   // Подсветка внутри строки сохраняется (тег и атрибут могут быть на одной строке).
-  function renderDiff(preEl, gutterEl, segments, pads) {
+    function renderDiff(preEl, gutterEl, segments) {
     preEl.textContent = '';
     gutterEl.textContent = '';
-
-    // после каких строк (с нуля) и сколько пустых строк вставить
-    const padAt = new Map();
-    for (const p of pads || []) padAt.set(p.afterLine, (padAt.get(p.afterLine) || 0) + p.count);
 
     const lines = [[]];
     for (const seg of segments) {
@@ -541,8 +976,7 @@ import { setDiagnostics } from '@codemirror/lint';
     const fragPre = document.createDocumentFragment();
     const fragGut = document.createDocumentFragment();
 
-    for (let li = 0; li < lines.length; li++) {
-      const parts = lines[li];
+    for (const parts of lines) {
       const row = document.createElement('div');
       row.className = 'c-line';
       let marker = '';
@@ -562,18 +996,6 @@ import { setDiagnostics } from '@codemirror/lint';
       const g = document.createElement('div');
       g.className = 'g-line' + (marker ? ' g-' + marker.slice(3) : '');
       fragGut.appendChild(g);
-
-      // заглушка, если слева после этой строки строк больше
-      const padCount = padAt.get(Math.min(li, lines.length - 1));
-      if (padCount && (li === lines.length - 1 || padAt.has(li))) {
-        const pad = document.createElement('div');
-        pad.className = 'c-line c-pad';
-        pad.style.height = (padCount * 1.5) + 'em';
-        fragPre.appendChild(pad);
-        const gp = document.createElement('div');
-        gp.className = 'g-line g-pad';
-        fragGut.appendChild(gp);
-      }
     }
 
     preEl.appendChild(fragPre);
@@ -595,7 +1017,7 @@ import { setDiagnostics } from '@codemirror/lint';
     outputBox.hidden = false;
     staleBar.hidden = true;
     outputPane.classList.remove('stale');
-    renderDiff(diffRight, gutterRight, res.right, res.pads.right);
+    renderDiff(diffRight, gutterRight, res.right);
     lastOutput = res.output;
     btnCopy.disabled = res.output.length === 0;
   }
@@ -625,7 +1047,7 @@ import { setDiagnostics } from '@codemirror/lint';
     const res = fix(src);
     lastChecked = src;
     renderOutput(res);
-     applyLeftMarks(res.marks, res.diagnostics, res.pads.left);
+      applyLeftMarks(res.marks, res.diagnostics);
   }
 
   // вызывается при любой правке в левом поле
