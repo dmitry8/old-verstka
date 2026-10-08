@@ -9,7 +9,7 @@
 
   --hl-changed: #fff3bf;
   --hl-added: #d3f9d8;
-  --hl-removed: #ffe3e3;
+  --hl-removed: #ffb3b3;
   --hl-error: #ffd8a8;
 
   --mk-changed: #e0a800;
@@ -139,9 +139,6 @@ body {
 .cm-editor .cm-hl-changed { background: var(--hl-changed); border-radius: 2px; }
 .cm-editor .cm-hl-removed { background: var(--hl-removed); border-radius: 2px; }
 .cm-editor .cm-hl-error   { background: var(--hl-error); outline: 1px dashed var(--mk-error); border-radius: 2px; }
-.cm-editor .cm-pad {
-  background: repeating-linear-gradient(135deg, #f1f3f5 0 6px, #e9ecef 6px 12px);
-}
 
 /* маркер в гуттере слева */
 .cm-editor .cm-gutterElement.cm-g-changed { box-shadow: inset 3px 0 0 var(--mk-changed); background: var(--hl-changed); }
@@ -239,9 +236,6 @@ body {
   tab-size: 2;
 }
 .c-line { min-height: 1.5em; }
-.c-pad { background: repeating-linear-gradient(135deg, #f1f3f5 0 6px, #e9ecef 6px 12px); }
-.g-line.g-pad { counter-increment: none; background: #f1f3f5; }
-.g-line.g-pad::before { content: ""; }
 
 .hl-changed { background: var(--hl-changed); border-radius: 2px; }
 .hl-added   { background: var(--hl-added); border-radius: 2px; }
