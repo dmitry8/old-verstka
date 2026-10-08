@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Фиксер вёрстки</title>
+  <link rel="stylesheet" href="styles.css">
+
+  <!-- CodeMirror 6 с CDN, без сборки. Звёздочка в адресе говорит CDN «не тащи зависимости сам»,
+       чтобы все пакеты использовали один экземпляр ядра — иначе редактор падает. -->
+  <!-- CodeMirror 6 с CDN jsDelivr, без сборки: зависимости подтягиваются автоматически -->
+  <script type="importmap">
+  {
+    "imports": {
+      "@codemirror/state":     "https://esm.sh/@codemirror/state@6",
+      "@codemirror/view":      "https://esm.sh/@codemirror/view@6",
+      "@codemirror/language":  "https://esm.sh/@codemirror/language@6",
+      "@codemirror/commands":  "https://esm.sh/@codemirror/commands@6",
+      "@codemirror/lint":      "https://esm.sh/@codemirror/lint@6",
+      "@codemirror/lang-html": "https://esm.sh/@codemirror/lang-html@6"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Фиксер вёрстки</h1>
+    <span class="hint">Вставьте HTML слева, нажмите «Поправить» — справа появится результат с подсветкой изменений.</span>
+    <div class="legend">
+      <span><i class="sw hl-changed"></i>изменено</span>
+      <span><i class="sw hl-added"></i>добавлено</span>
+      <span><i class="sw hl-removed"></i>удалено</span>
+      <span><i class="sw hl-error"></i>ошибка</span>
+    </div>
+  </header>
+
+  <main class="editors">
+    <section class="pane">
+      <div class="pane-head">
+        <span class="pane-title">Исходная вёрстка</span>
+        <div class="pane-actions">
+          <button type="button" id="btn-clear" class="btn btn-ghost">Очистить</button>
+        </div>
+      </div>
+      <div class="pane-body">
+        <div id="input"></div>
+      </div>
+    </section>
+
+    <div class="middle">
+      <button type="button" id="btn-fix" class="btn btn-primary">Ебаш →</button>
+    </div>
+
+    <section class="pane" id="output-pane">
+      <div class="pane-head">
+        <span class="pane-title">Результат</span>
+        <div class="pane-actions">
+          <button type="button" id="btn-copy" class="btn btn-ghost" disabled>Копировать</button>
+        </div>
+      </div>
+      <div class="pane-body">
+        <div id="stale-bar" class="stale-bar" hidden>
+          <span>Исходник изменился — результат устарел.</span>
+          <button type="button" id="btn-refix" class="btn btn-ghost">Поправить снова</button>
+        </div>
+        <div id="output-empty" class="output-empty">Здесь появится исправленная вёрстка</div>
+        <div id="output" class="output" hidden>
+          <div class="diff-gutter" id="gutter-right"></div>
+          <pre id="diff-right" class="code"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="rules.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
