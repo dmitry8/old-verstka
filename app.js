@@ -507,6 +507,77 @@ import { setDiagnostics } from '@codemirror/lint';
         continue;
       }
 
+      // Правило 9: <example>…</example> → <inset>…</inset>
+      if (/^<example\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const eOpenEnd = j + 1;
+        const eOpenText = html.slice(lt, eOpenEnd);
+
+        let eDepth = 1, eClose = null;
+        const eRe = /<(\/?)example\b[^>]*>/gi;
+        eRe.lastIndex = eOpenEnd;
+        let et;
+        while ((et = eRe.exec(html))) {
+          eDepth += et[1] ? -1 : 1;
+          if (eDepth === 0) { eClose = { start: et.index, end: et.index + et[0].length, text: et[0] }; break; }
+        }
+        if (!eClose) {
+          replacements.push({ start: lt, end: eOpenEnd, newText: eOpenText, error: true,
+            message: 'Не найден парный </example> — элемент пропущен.' });
+          pos = eOpenEnd;
+          continue;
+        }
+
+        const eNewOpen = eOpenText.replace(/^<example\b/i, '<inset');
+        const eNewText = eNewOpen + html.slice(eOpenEnd, eClose.start) + '</inset>';
+        replacements.push({ start: lt, end: eClose.end, newText: eNewText, kind: 'inset',
+          closeOffset: eClose.start - lt, closeText: eClose.text, error: false });
+        pos = eClose.end;
+        continue;
+      }
+
+      // Правило 10: <abbr>…</abbr> → содержимое без тегов
+      if (/^<abbr\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const abOpenEnd = j + 1;
+        const abOpenText = html.slice(lt, abOpenEnd);
+
+        let abDepth = 1, abClose = null;
+        const abRe = /<(\/?)abbr\b[^>]*>/gi;
+        abRe.lastIndex = abOpenEnd;
+        let at;
+        while ((at = abRe.exec(html))) {
+          abDepth += at[1] ? -1 : 1;
+          if (abDepth === 0) { abClose = { start: at.index, end: at.index + at[0].length, text: at[0] }; break; }
+        }
+        if (!abClose) {
+          replacements.push({ start: lt, end: abOpenEnd, newText: abOpenText, error: true,
+            message: 'Не найден парный </abbr> — элемент пропущен.' });
+          pos = abOpenEnd;
+          continue;
+        }
+
+        const abNewText = html.slice(abOpenEnd, abClose.start);
+        replacements.push({ start: lt, end: abClose.end, newText: abNewText, kind: 'unwrap',
+          openLen: abOpenEnd - lt, closeOffset: abClose.start - lt, closeLen: abClose.text.length, error: false });
+        pos = abClose.end;
+        continue;
+      }
+
       // быстро проверяем <img или <image
       const isImg = head.startsWith('<img') && /<img\b/.test(head);
       const isImage = head.startsWith('<image') && /<image\b/.test(head);
@@ -703,6 +774,21 @@ import { setDiagnostics } from '@codemirror/lint';
       for (const a of r.attrs) spans.push({ from: a.start, to: a.end, cls: 'hl-removed' });
     }
 
+     // unwrap (abbr): оба тега удаляются целиком, содержимое остаётся без подсветки
+    if (r.kind === 'unwrap') {
+      spans.push({ from: 0, to: r.openLen, cls: 'hl-removed' });
+      spans.push({ from: r.closeOffset, to: r.closeOffset + r.closeLen, cls: 'hl-removed' });
+    }
+
+    // inset: имя тега example → изменено (в обоих тегах)
+    if (r.kind === 'inset') {
+      spans.push({ from: 1, to: 8, cls: 'hl-changed' });                       // <example
+      const nameInClose = r.closeText.search(/example/i);                      // </example>
+      if (nameInClose !== -1) {
+        spans.push({ from: r.closeOffset + nameInClose, to: r.closeOffset + nameInClose + 7, cls: 'hl-changed' });
+      }
+    }
+
     // bubble: имя тега hl → изменено (в обоих тегах), isbuble="…" → удалено целиком
     if (r.kind === 'bubble') {
       spans.push({ from: 1, to: 3, cls: 'hl-changed' });                       // <hl
@@ -817,6 +903,17 @@ import { setDiagnostics } from '@codemirror/lint';
 
    function splitRightChunk(newText, r) {
     if (r.kind === 'strip') return [{text: '<'}, {text: 'table', cls: 'hl-changed'}, {text: '>'}];
+    if (r.kind === 'inset') {
+      const c = newText.lastIndexOf('</inset>');
+      return [
+        {text: '<'},
+        {text: 'inset', cls: 'hl-changed'},
+        {text: newText.slice(6, c)},
+        {text: '</'},
+        {text: 'inset', cls: 'hl-changed'},
+        {text: '>'},
+      ];
+    }
     if (r.kind === 'bubble') {
       const c = newText.lastIndexOf('</bubble>');
       return [
