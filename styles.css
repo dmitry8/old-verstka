@@ -48,6 +48,64 @@ body {
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,.08); }
 
+/* ---- попап с правилами ---- */
+
+#btn-rules { margin-left: auto; }
+#btn-rules .count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #e9ecef;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+.legend { margin-left: 0; }
+
+.rules-dialog {
+  width: min(720px, calc(100vw - 40px));
+  max-height: calc(100vh - 80px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.18);
+  color: var(--text);
+  overflow: hidden;
+  display: none;
+  flex-direction: column;
+}
+.rules-dialog[open] { display: flex; }
+.rules-dialog::backdrop { background: rgba(0,0,0,.35); }
+
+.rules-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: #fafbfc;
+  flex: none;
+}
+.rules-head h2 { margin: 0; font-size: 15px; }
+
+.rules-list {
+  margin: 0;
+  padding: 12px 20px 12px 40px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.rules-list li { padding: 4px 0; }
+.rules-list code {
+  font: 12px/1.4 var(--mono);
+  background: #f1f3f5;
+  padding: 1px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
 /* ---- два поля ---- */
 
 .editors {

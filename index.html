@@ -23,7 +23,8 @@
 <body>
   <header class="topbar">
     <h1>Переверстка старых тегов</h1>
-    <span class="hint">Вставьте HTML слева, нажмите «Ебаш» — справа появится результат с подсветкой изменений.</span>
+    <span class="hint">Вставьте HTML слева, нажмите «Ебашь» — справа появится результат с подсветкой изменений.</span>
+    <button type="button" id="btn-rules" class="btn btn-ghost">Правила <span class="count">21</span></button>
     <div class="legend">
       <span><i class="sw hl-changed"></i>изменено</span>
       <span><i class="sw hl-added"></i>добавлено</span>
@@ -46,7 +47,7 @@
     </section>
 
     <div class="middle">
-      <button type="button" id="btn-fix" class="btn btn-primary">Ебаш →</button>
+      <button type="button" id="btn-fix" class="btn btn-primary">Ебашь →</button>
     </div>
 
     <section class="pane" id="output-pane">
@@ -69,6 +70,36 @@
       </div>
     </section>
   </main>
+
+  <dialog id="rules-dialog" class="rules-dialog">
+    <div class="rules-head">
+      <h2>Что делает сервис</h2>
+      <button type="button" id="btn-rules-close" class="btn btn-ghost" aria-label="Закрыть">✕</button>
+    </div>
+    <ol class="rules-list">
+      <li>Тег <code>&lt;img&gt;</code> заменяется на <code>&lt;image&gt;</code></li>
+      <li>Атрибут картинки <code>caption="…"</code> переносится во вложенный тег <code>&lt;caption&gt;</code></li>
+      <li>Самозакрывающийся <code>&lt;img …/&gt;</code> разворачивается в парный <code>&lt;image …&gt;&lt;/image&gt;</code></li>
+      <li>Пустой атрибут <code>caption=""</code> у картинки удаляется</li>
+      <li>Пустой атрибут <code>prop=""</code> у картинки удаляется</li>
+      <li>Из атрибута картинки <code>prop="…"</code> удаляется значение <code>nocontain</code></li>
+      <li>Удаляется мобильная таблица <code>&lt;div class="mobile-table"&gt;…&lt;/div&gt;</code></li>
+      <li>У таблицы <code>&lt;table class="desktop-table" …&gt;</code> удаляются все атрибуты</li>
+      <li>Атрибут <code>title="…"</code> у <code>&lt;details&gt;</code> переносится во вложенный тег <code>&lt;title&gt;</code></li>
+      <li>Атрибут <code>title="…"</code> у <code>&lt;hl&gt;</code> переносится во вложенный тег <code>&lt;h3&gt;</code></li>
+      <li>Атрибут <code>desc="…"</code> у <code>&lt;author&gt;</code> переносится во вложенный тег <code>&lt;description&gt;</code></li>
+      <li>Атрибут <code>opentitle="…"</code> у <code>&lt;details&gt;</code> удаляется</li>
+      <li>Сущности <code>&amp;lt;</code> и <code>&amp;gt;</code> при переносе из атрибутов превращаются в теги <code>&lt;</code> и <code>&gt;</code></li>
+      <li>Атрибут <code>url="…"</code> у <code>&lt;aside&gt;</code> удаляется, а содержимое оборачивается в <code>&lt;a href="…"&gt;…&lt;/a&gt;</code></li>
+      <li>Тег <code>&lt;hl isbuble="true"&gt;</code> заменяется на <code>&lt;bubble&gt;</code>, атрибут <code>isbuble</code> удаляется</li>
+      <li>Тег <code>&lt;example&gt;</code> заменяется на <code>&lt;inset&gt;</code></li>
+      <li>Тег <code>&lt;abbr&gt;</code> удаляется, содержимое остаётся</li>
+      <li>У списков <code>&lt;ol&gt;</code> и <code>&lt;ul&gt;</code> удаляется атрибут <code>type="…"</code></li>
+      <li>У <code>&lt;fotorama&gt;</code> удаляется атрибут <code>type="docs"</code></li>
+      <li>После удаления атрибута <code>&lt;fotorama type="docs"&gt;</code> вложенным картинкам в <code>prop</code> добавляется <code>bordered</code>, если его там нет</li>
+      <li>У <code>&lt;fotorama&gt;</code> удаляется атрибут <code>mobile_direction="column"</code></li>
+    </ol>
+  </dialog>
 
   <script src="rules.js"></script>
   <script type="module" src="app.js"></script>
