@@ -218,7 +218,48 @@ import { setDiagnostics } from '@codemirror/lint';
         replacements.push({ start: b.start, end: b.end, newText: '', kind: 'delete', error: false });
       }
     }
-    const deletedBlockAt = (p) => deletable.find((b) => !b.error && p >= b.start && p < b.end);
+        const deletedBlockAt = (p) => deletable.find((b) => !b.error && p >= b.start && p < b.end);
+
+    // Правило 12: <fotorama type="…"> → <fotorama>; вложенным image нужен prop с bordered
+    const docsFotoramas = [];
+    const fRe = /<fotorama\b/gi;
+    let fm;
+    while ((fm = fRe.exec(html))) {
+      const fStart = fm.index;
+      if (deletedBlockAt(fStart)) continue;
+      let j = fStart + 1, q = null;
+      while (j < html.length) {
+        const ch = html[j];
+        if (q) { if (ch === q) q = null; }
+        else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+        j++;
+      }
+      if (j >= html.length) break;
+      const fOpenEnd = j + 1;
+      const fOpenText = html.slice(fStart, fOpenEnd);
+      const fAttrs = parseAttrs(fOpenText);
+      const fTypeAttr = fAttrs.find(a => a.name === 'type');
+      const fDirAttr = fAttrs.find(a => a.name === 'mobile_direction');   // Правило 13
+      if (!fTypeAttr && !fDirAttr) continue;
+
+      let fNewText = fOpenText;
+      if (fTypeAttr) fNewText = fNewText.replace(/\s+type\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
+      if (fDirAttr) fNewText = fNewText.replace(/\s+mobile_direction\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
+
+      // только для type нужен парный тег — чтобы знать, каким image добавлять bordered
+      if (fTypeAttr) {
+        const fClose = findClosingTag(html, fOpenEnd, 'fotorama');
+        if (!fClose) {
+          replacements.push({ start: fStart, end: fOpenEnd, newText: fOpenText, error: true,
+            message: 'Не найден парный </fotorama> — элемент пропущен.' });
+          continue;
+        }
+        docsFotoramas.push({ start: fOpenEnd, end: fClose.start });
+      }
+      replacements.push({ start: fStart, end: fOpenEnd, kind: 'fotorama', typeAttr: fTypeAttr, dirAttr: fDirAttr,
+        newText: fNewText, error: false });
+    }
+    const inDocsFotorama = (p) => docsFotoramas.some((f) => p >= f.start && p < f.end);
 
     while (pos < html.length) {
       const lt = html.indexOf('<', pos);
@@ -578,6 +619,27 @@ import { setDiagnostics } from '@codemirror/lint';
         continue;
       }
 
+      // Правило 11: <ol type="…"> / <ul type="…"> → атрибут type удаляем
+      if (/^<(ol|ul)\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const lOpenEnd = j + 1;
+        const lOpenText = html.slice(lt, lOpenEnd);
+        const typeAttr = parseAttrs(lOpenText).find(a => a.name === 'type');
+        if (typeAttr) {
+          const lNewText = lOpenText.replace(/\s+type\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
+          replacements.push({ start: lt, end: lOpenEnd, newText: lNewText, kind: 'listtype', typeAttr, error: false });
+        }
+        pos = lOpenEnd;
+        continue;
+      }
+
       // быстро проверяем <img или <image
       const isImg = head.startsWith('<img') && /<img\b/.test(head);
       const isImage = head.startsWith('<image') && /<image\b/.test(head);
@@ -618,20 +680,26 @@ import { setDiagnostics } from '@codemirror/lint';
         fullEnd = closeEnd;
       }
 
-      const attrs = parseAttrs(openText);
+            const attrs = parseAttrs(openText);
       const captionAttr = attrs.find(a => a.name === 'caption');
-      const emptyPropAttr = attrs.find(a => a.name === 'prop' && a.value.trim() === '');
+      const propAttr = attrs.find(a => a.name === 'prop');
+
+      // prop: убираем nocontain; внутри fotorama с type — добавляем bordered; пустой prop удаляем
+      const oldTokens = propAttr ? propAttr.value.split(/\s+/).filter(Boolean) : [];
+      const newTokens = oldTokens.filter(t => t !== 'nocontain');
+      if (inDocsFotorama(lt) && !newTokens.includes('bordered')) newTokens.push('bordered');
+      const newProp = newTokens.join(' ');
+      let propAction = null; // 'remove' | 'replace' | 'add' | null
+      if (propAttr && newProp === '') propAction = 'remove';
+      else if (propAttr && newProp !== oldTokens.join(' ')) propAction = 'replace';
+      else if (!propAttr && newProp !== '') propAction = 'add';
 
       // 5. уже новый формат: <image> без caption-атрибута но с <caption> внутри или просто без caption -> пропускаем
       const hasInnerCaption = /<caption[\s>]/i.test(inner);
-      if (tagName === 'image' && !captionAttr) {
-        // если это уже <image><caption>...</caption></image> или <image> без caption - считаем новым форматом
-        // self-closing image без caption всё же развернем в парный
-        if (!isSelfClosing) {
-          pos = fullEnd;
-          continue;
-        }
-        // self-closing без caption -> развернем (см ниже)
+      // уже новый формат и prop менять не надо — пропускаем
+      if (tagName === 'image' && !captionAttr && !isSelfClosing && !propAction) {
+        pos = fullEnd;
+        continue;
       }
 
       // 8. корнер-кейсы -> ошибка, не трогаем, подсвечиваем
@@ -654,7 +722,7 @@ import { setDiagnostics } from '@codemirror/lint';
       const needsCaptionMove = !!captionAttr && captionAttr.value.trim() !== '';
       const needsCaptionRemove = !!captionAttr; // даже пустой надо удалить
 
-      if (!needsRename && !needsUnwrap && !needsCaptionRemove) {
+      if (!needsRename && !needsUnwrap && !needsCaptionRemove && !propAction) {
         pos = fullEnd;
         continue;
       }
@@ -665,8 +733,10 @@ import { setDiagnostics } from '@codemirror/lint';
       if (captionAttr) {
         newOpen = newOpen.replace(/\s+caption\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
       }
-      // 1b. удалить пустой prop (prop="" или prop='')
-      newOpen = newOpen.replace(/\s+prop\s*=\s*(?:""|'')/, '');
+      // 1b. prop: удалить / заменить значение / добавить после имени тега
+      if (propAction === 'remove') newOpen = newOpen.replace(/\s+prop\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '');
+      else if (propAction === 'replace') newOpen = newOpen.replace(/(\s+prop\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '$1"' + newProp + '"');
+      else if (propAction === 'add') newOpen = newOpen.replace(/^<(img|image)\b/i, '<$1 prop="' + newProp + '"');
       // 2. переименовать img -> image
       if (tagName === 'img') {
         newOpen = newOpen.replace(/^<\s*img\b/, '<image');
@@ -696,8 +766,8 @@ import { setDiagnostics } from '@codemirror/lint';
       }
 
       replacements.push({
-        start: lt, end: fullEnd, newText, openText, captionAttr, emptyPropAttr,
-        tagName, isSelfClosing, block, indent, error: false
+        start: lt, end: fullEnd, newText, openText, captionAttr, propAttr, propAction, newProp,
+        captionMoved: needsCaptionMove, tagName, isSelfClosing, block, indent, error: false
       });
       pos = fullEnd;
     }
@@ -774,7 +844,12 @@ import { setDiagnostics } from '@codemirror/lint';
       for (const a of r.attrs) spans.push({ from: a.start, to: a.end, cls: 'hl-removed' });
     }
 
-     // unwrap (abbr): оба тега удаляются целиком, содержимое остаётся без подсветки
+    // listtype: атрибут type у ol/ul удаляется целиком
+    if (r.kind === 'listtype') {
+      spans.push({ from: r.typeAttr.start, to: r.typeAttr.end, cls: 'hl-removed' });
+    }
+
+    // unwrap (abbr): оба тега удаляются целиком, содержимое остаётся без подсветки
     if (r.kind === 'unwrap') {
       spans.push({ from: 0, to: r.openLen, cls: 'hl-removed' });
       spans.push({ from: r.closeOffset, to: r.closeOffset + r.closeLen, cls: 'hl-removed' });
@@ -868,8 +943,19 @@ import { setDiagnostics } from '@codemirror/lint';
       }
     }
 
-    // пустой prop="" → удалено целиком
-    if (r.emptyPropAttr) spans.push({ from: r.emptyPropAttr.start, to: r.emptyPropAttr.end, cls: 'hl-removed' });
+        // fotorama: атрибуты type и mobile_direction удаляются
+    if (r.kind === 'fotorama') {
+      if (r.typeAttr) spans.push({ from: r.typeAttr.start, to: r.typeAttr.end, cls: 'hl-removed' });
+      if (r.dirAttr) spans.push({ from: r.dirAttr.start, to: r.dirAttr.end, cls: 'hl-removed' });
+    }
+
+    // prop у image: удалён целиком / удалён только nocontain
+    if (r.propAttr && r.propAction === 'remove') {
+      spans.push({ from: r.propAttr.start, to: r.propAttr.end, cls: 'hl-removed' });
+    } else if (r.propAttr && r.propAction === 'replace') {
+      const a = r.propAttr, idx = a.raw.indexOf('nocontain');
+      if (idx !== -1) spans.push({ from: a.start + idx, to: a.start + idx + 9, cls: 'hl-removed' });
+    }
 
     spans.sort((a, b) => a.from - b.from);
     const out = [];
@@ -983,73 +1069,41 @@ import { setDiagnostics } from '@codemirror/lint';
         {text: newText.slice(c + 8)},
       ];
     }
-    const out = [];
-    // имя image если было img -> hl-changed
-    const nameStart = newText.indexOf('<image');
-    if (nameStart !== -1 && r.tagName === 'img') {
-      if (nameStart > 0) out.push({text: newText.slice(0, nameStart+1)});
-      else out.push({text: '<'});
-      out.push({text: 'image', cls: 'hl-changed'});
-      let rest = newText.slice(nameStart+6);
-      // найдем <caption> и </caption> и финальный </image> как hl-added
-      const capOpen = '<caption>';
-      const capClose = '</caption>';
-      const capO = rest.indexOf(capOpen);
-      if (capO !== -1) {
-        out.push({text: rest.slice(0, capO)});
-        out.push({text: capOpen, cls: 'hl-added'});
-        const capTextStart = capO + capOpen.length;
-        const capC = rest.indexOf(capClose, capTextStart);
-        if (capC !== -1) {
-          out.push({text: rest.slice(capTextStart, capC)}); // сам текст не подсвечиваем
-          out.push({text: capClose, cls: 'hl-added'});
-          const afterCap = rest.slice(capC + capClose.length);
-          // финальный </image>
-          const closeIdx = afterCap.indexOf('</image>');
-          if (closeIdx !== -1) {
-            if (closeIdx > 0) {
-              // учитываем возможный \n и отступ перед </image>
-              const beforeClose = afterCap.slice(0, closeIdx);
-              // подсветим только тег, отступ оставим без подсветки
-              const wsMatch = beforeClose.match(/(\n[ \t]*)$/);
-              if (wsMatch) {
-                out.push({text: beforeClose.slice(0, beforeClose.length - wsMatch[1].length)});
-                out.push({text: wsMatch[1]});
-              } else {
-                out.push({text: beforeClose});
-              }
-            }
-            out.push({text: '</image>', cls: 'hl-added'});
-            const tail = afterCap.slice(closeIdx + 8);
-            if (tail) out.push({text: tail});
-          } else {
-            out.push({text: afterCap});
-          }
-        } else {
-          out.push({text: rest.slice(capTextStart)});
-        }
-      } else {
-        // без caption: подсвечиваем добавленный </image> если он был добавлен (self-closing case)
-        if (r.isSelfClosing) {
-          const ci = rest.indexOf('</image>');
-          if (ci !== -1) {
-            out.push({text: rest.slice(0, ci)});
-            out.push({text: '</image>', cls: 'hl-added'});
-            out.push({text: rest.slice(ci+8)});
-          } else {
-            out.push({text: rest});
-          }
-        } else {
-          out.push({text: rest});
-        }
+    // image / img: подсвечиваем только то, что реально появилось или изменилось
+    const spans = [];
+    if (r.tagName === 'img') spans.push({ from: 1, to: 6, cls: 'hl-changed' });            // <image
+    if (r.propAction === 'add') {
+      const m = newText.match(/^<image(\s+prop\s*=\s*"[^"]*")/i);
+      if (m) spans.push({ from: 6, to: 6 + m[1].length, cls: 'hl-added' });                 // prop="bordered"
+    } else if (r.propAction === 'replace' && r.propAttr
+               && !r.propAttr.value.split(/\s+/).includes('bordered') && r.newProp.split(' ').includes('bordered')) {
+      const pm = newText.match(/\sprop\s*=\s*"[^"]*"/);
+      if (pm) {
+        const idx = pm.index + pm[0].lastIndexOf('bordered');
+        spans.push({ from: idx, to: idx + 8, cls: 'hl-added' });                            // добавленный bordered
       }
-      return out;
     }
-    // если имя не менялось, просто подсветим добавленные caption/close
-    if (newText.includes('<caption>')) {
-      return splitRightChunk(newText, {...r, tagName:'img'}); // reuse логику выше для подсветки caption
+    if (r.captionMoved) {
+      const o = newText.indexOf('<caption>'), c = newText.indexOf('</caption>', o);
+      if (o !== -1) spans.push({ from: o, to: o + 9, cls: 'hl-added' });
+      if (c !== -1) spans.push({ from: c, to: c + 10, cls: 'hl-added' });
     }
-    return [{text: newText}];
+    if (r.isSelfClosing) {
+      const ci = newText.lastIndexOf('</image>');
+      if (ci !== -1) spans.push({ from: ci, to: ci + 8, cls: 'hl-added' });
+    }
+
+    spans.sort((a, b) => a.from - b.from);
+    const out = [];
+    let cur = 0;
+    for (const s of spans) {
+      if (s.from < cur) continue;
+      if (s.from > cur) out.push({text: newText.slice(cur, s.from)});
+      out.push({text: newText.slice(s.from, s.to), cls: s.cls});
+      cur = s.to;
+    }
+    if (cur < newText.length) out.push({text: newText.slice(cur)});
+    return out;
   }
 
   // --- render ---
@@ -1182,6 +1236,12 @@ import { setDiagnostics } from '@codemirror/lint';
   btnRefix.addEventListener('click', run);
   btnCopy.addEventListener('click', copyOutput);
   btnClear.addEventListener('click', clearAll);
+
+  // попап со списком правил
+  const rulesDialog = $('rules-dialog');
+  $('btn-rules').addEventListener('click', () => rulesDialog.showModal());
+  $('btn-rules-close').addEventListener('click', () => rulesDialog.close());
+  rulesDialog.addEventListener('click', (e) => { if (e.target === rulesDialog) rulesDialog.close(); });
 
 
   window.addEventListener('resize', () => syncGutterHeights(diffRight, gutterRight));
