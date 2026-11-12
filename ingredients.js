@@ -26,8 +26,12 @@ function parseQuantity(raw) {
   return { amount: '', unit: text };
 }
 
-// "1,5" → "1.5"; дроби вида "1/2" переносим как есть
+// "1,5" → "1.5"; "1/2" → "0.5", "1/3" → "0.33" (дроби округляем до двух знаков)
 function normalizeNumber(s) {
+  if (s.includes('/')) {
+    const [a, b] = s.split('/').map(Number);
+    return b ? String(Math.round((a / b) * 100) / 100) : s;
+  }
   return s.replace(',', '.');
 }
 
@@ -164,10 +168,15 @@ function fix(html) {
       if (!grouped) { pushIngredient(c[0], c[1], row); continue; }
 
       if (c.length === 3) {
-        // три ячейки — начало новой группы: название + первый ингредиент
         const title = c[0].inner.trim();
-        if (title === '') addError(c[0].start, c[0].end, 'Пустое название группы.');
-        openGroup(title);
+        if (title !== '') {
+          // непустая первая ячейка — начало новой группы: название + первый ингредиент
+          openGroup(title);
+        } else if (!groupOpen) {
+          addError(row.start, row.end, 'Строка идёт до первой группы — создана группа с пустым названием.');
+          openGroup('');
+        }
+        // пустая первая ячейка при открытой группе — просто ингредиент в текущую группу
         pushIngredient(c[1], c[2], row);
       } else {
         if (!groupOpen) {
