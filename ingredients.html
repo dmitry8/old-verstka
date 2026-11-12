@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Счётчик ингредиентов</title>
+  <link rel="stylesheet" href="styles.css">
+
+  <script type="importmap">
+  {
+    "imports": {
+      "@codemirror/state":     "https://esm.sh/@codemirror/state@6",
+      "@codemirror/view":      "https://esm.sh/@codemirror/view@6",
+      "@codemirror/language":  "https://esm.sh/@codemirror/language@6",
+      "@codemirror/commands":  "https://esm.sh/@codemirror/commands@6",
+      "@codemirror/lint":      "https://esm.sh/@codemirror/lint@6",
+      "@codemirror/lang-html": "https://esm.sh/@codemirror/lang-html@6"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <button type="button" id="btn-menu" class="btn-menu" aria-label="Инструменты">
+      <span></span><span></span><span></span>
+    </button>
+    <h1>Счётчик ингредиентов</h1>
+    <button type="button" id="btn-rules" class="btn btn-ghost">Инструкция</button>
+  </header>
+
+  <main class="workspace">
+    <div class="toolbar">
+      <div class="toolbar-side">
+        <span class="field-title">Исходная таблица</span>
+        <button type="button" id="btn-clear" class="btn btn-ghost">Очистить</button>
+      </div>
+      <div class="toolbar-center">
+        <button type="button" id="btn-paste" class="btn">Вставить</button>
+        <button type="button" id="btn-fix" class="btn btn-primary">Ебашь →</button>
+        <button type="button" id="btn-copy" class="btn" disabled>Копировать</button>
+      </div>
+      <div class="toolbar-side toolbar-side-right">
+        <label class="portions">Порций <input type="number" id="portions" value="2" min="1" step="1"></label>
+        <label class="portions">Единица <input type="text" id="recipe-unit" class="unit" value="порция"></label>
+        <span class="field-title">Результат</span>
+      </div>
+    </div>
+
+    <div class="editors">
+    <div class="input-col">
+    <section class="pane">
+      <div class="pane-body">
+        <div id="input"></div>
+      </div>
+    </section>
+    <div id="messages" class="messages" hidden></div>
+    </div>
+
+    <section class="pane" id="output-pane">
+      <div class="pane-body">
+        <div id="stale-bar" class="stale-bar" hidden>
+          <span>Исходник изменился — результат устарел.</span>
+          <button type="button" id="btn-refix" class="btn btn-ghost">Поправить снова</button>
+        </div>
+        <div id="output-empty" class="output-empty">Здесь появится счётчик</div>
+        <div id="output" class="output" hidden>
+          <div class="diff-gutter" id="gutter-right"></div>
+          <pre id="diff-right" class="code"></pre>
+        </div>
+      </div>
+    </section>
+    </div>
+  </main>
+
+  <dialog id="rules-dialog" class="rules-dialog">
+    <div class="rules-head">
+      <h2>Как пользоваться</h2>
+      <button type="button" id="btn-rules-close" class="btn btn-ghost" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="rules-body">
+      <h3>Что вставлять</h3>
+      <p>Заголовок <code>&lt;h3&gt;</code> и html-таблицу с ингредиентами из редактора. Можно несколько пар «заголовок + таблица» подряд — каждая превратится в отдельный <code>&lt;recipe&gt;</code>.</p>
+
+      <h3>Таблица из двух колонок</h3>
+      <p>Первая колонка — название ингредиента, вторая — количество. Каждая строка становится <code>&lt;ingredient&gt;</code>.</p>
+
+      <h3>Таблица из трёх колонок (с группами)</h3>
+      <ul>
+        <li>Строка с тремя ячейками открывает новую группу: первая ячейка — название группы, две остальные — первый ингредиент.</li>
+        <li>Строки с двумя ячейками попадают в текущую группу.</li>
+        <li>Если первая строка таблицы — с двумя ячейками, группа создаётся с пустым названием, строка подсвечивается.</li>
+        <li>Больше трёх ячеек в строке быть не должно — такая таблица пропускается целиком.</li>
+      </ul>
+
+      <h3>Как разбирается количество</h3>
+      <ul>
+        <li><code>160 г</code> → <code>amount="160" unit="г"</code> — число в начале уходит в amount, остальное в unit.</li>
+        <li><code>1,5 ст. л.</code> → <code>amount="1.5"</code> — запятая меняется на точку.</li>
+        <li><code>1/2 стакана</code> → <code>amount="1/2"</code> — дроби переносятся как есть.</li>
+        <li><code>По вкусу</code>, <code>щепотка</code> → <code>amount="" unit="По вкусу"</code> — текст без числа целиком уходит в unit.</li>
+        <li><code>3</code> → <code>amount="3" unit=""</code> — число без единицы: ячейка подсвечивается, unit нужно заполнить руками.</li>
+      </ul>
+
+      <h3>Что ещё важно</h3>
+      <ul>
+        <li>Первая колонка переносится как есть — теги, форматирование и <code>&amp;nbsp;</code> сохраняются.</li>
+        <li>Во второй колонке теги выбрасываются, <code>&amp;nbsp;</code> считается пробелом.</li>
+        <li>Все атрибуты таблицы (<code>width</code>, <code>class</code> и т.п.) удаляются.</li>
+        <li>Текст вне таблиц и заголовков в результат не попадает и подсвечивается.</li>
+        <li>Заголовок <code>&lt;h3&gt;</code> любого вида превращается в <code>&lt;h3 level="3"&gt;</code>. Если заголовка нет — таблица всё равно конвертируется, внизу появится сообщение.</li>
+      </ul>
+
+      <h3>Порции и единица</h3>
+      <p>Поля «Порций» и «Единица» над правым полем подставляются в <code>&lt;recipe portions="…" unit="…"&gt;</code>. Менять можно после конвертации — результат пересчитается сразу.</p>
+
+      <h3>Ошибки</h3>
+      <p>Проблемные места подсвечены оранжевым в левом поле — наведите курсор, чтобы увидеть пояснение. Ошибки, не привязанные к конкретному месту, показываются плашкой под левым полем. Всё, что можно, конвертируется — остальное нужно поправить руками.</p>
+    </div>
+  </dialog>
+
+  <script type="module" src="nav.js"></script>
+  <script type="module" src="ingredients.js"></script>
+</body>
+</html>

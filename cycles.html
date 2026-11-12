@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Циклы</title>
+  <link rel="stylesheet" href="styles.css">
+
+  <script type="importmap">
+  {
+    "imports": {
+      "@codemirror/state":     "https://esm.sh/@codemirror/state@6",
+      "@codemirror/view":      "https://esm.sh/@codemirror/view@6",
+      "@codemirror/language":  "https://esm.sh/@codemirror/language@6",
+      "@codemirror/commands":  "https://esm.sh/@codemirror/commands@6",
+      "@codemirror/lint":      "https://esm.sh/@codemirror/lint@6",
+      "@codemirror/lang-html": "https://esm.sh/@codemirror/lang-html@6"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <button type="button" id="btn-menu" class="btn-menu" aria-label="Инструменты">
+      <span></span><span></span><span></span>
+    </button>
+    <h1>Циклы</h1>
+    <button type="button" id="btn-rules" class="btn btn-ghost">Инструкция</button>
+  </header>
+
+  <main class="workspace">
+    <div class="toolbar">
+      <div class="toolbar-side">
+        <span class="field-title">Исходная вёрстка</span>
+        <button type="button" id="btn-clear" class="btn btn-ghost">Очистить</button>
+      </div>
+      <div class="toolbar-center">
+        <button type="button" id="btn-paste" class="btn">Вставить</button>
+        <button type="button" id="btn-fix" class="btn btn-primary">Ебашь →</button>
+        <button type="button" id="btn-copy" class="btn" disabled>Копировать</button>
+      </div>
+      <div class="toolbar-side toolbar-side-right">
+        <span class="field-title">JSON-конфиг</span>
+      </div>
+    </div>
+
+    <div class="editors">
+    <div class="input-col">
+    <section class="pane">
+      <div class="pane-body">
+        <div id="input"></div>
+      </div>
+    </section>
+    <div id="messages" class="messages" hidden></div>
+    </div>
+
+    <div class="output-col">
+    <section class="pane" id="output-pane">
+      <div class="pane-body">
+        <div id="stale-bar" class="stale-bar" hidden>
+          <span>Исходник изменился — результат устарел.</span>
+          <button type="button" id="btn-refix" class="btn btn-ghost">Поправить снова</button>
+        </div>
+        <div id="output-empty" class="output-empty">Здесь появится JSON-конфиг цикла</div>
+        <div id="output" class="output" hidden>
+          <div class="diff-gutter" id="gutter-right"></div>
+          <pre id="diff-right" class="code"></pre>
+        </div>
+      </div>
+    </section>
+    <div id="extras" class="extras" hidden></div>
+    </div>
+    </div>
+  </main>
+
+  <dialog id="rules-dialog" class="rules-dialog">
+    <div class="rules-head">
+      <h2>Как пользоваться</h2>
+      <button type="button" id="btn-rules-close" class="btn btn-ghost" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="rules-body">
+      <h3>Что вставлять</h3>
+      <p>Вводные можно вставлять в любом виде: скопировать прямо из Google Docs, в markdown-формате или просто html-таблицей вместе с заголовком. Главное — чтобы у статей были ссылки.</p>
+      <p>После вставки всё приводится к одному виду: первая строка — заголовок, дальше по строке на статью в формате <code>[название](ссылка)</code>:</p>
+      <pre>Эта статья — часть сборника «Как переехать в Сербию»
+
+[Узнать общую информацию о стране](https://t-j.ru/go-to-serbia/)
+[Выбрать подходящий ВНЖ](https://t-j.ru/list/serbia-boravak/)</pre>
+
+      <h3>Что получается</h3>
+      <p><b>JSON-конфиг</b> — в правом поле. Массив <code>cycle</code> со <code>slug</code> и <code>title</code> каждой статьи.</p>
+      <p>Для заведения конфига в админке:</p>
+      <ul>
+        <li><b>Название конфига</b> — <code>Цикл: </code> + название из заголовка без кавычек.</li>
+        <li><b>Слаг цикла</b> — <code>cycle-</code> + слаг первой статьи в списке.</li>
+      </ul>
+      <p>Для подключения конфига внутри статьи:</p>
+      <ul>
+        <li><b>HTML-блок</b> — <code>&lt;h3 level="3"&gt;</code> с заголовком и <code>&lt;cycle config="…"&gt;</code>.</li>
+      </ul>
+      <p>У каждого блока своя кнопка копирования.</p>
+
+      <h3>Как разбираются данные</h3>
+      <ul>
+        <li><b>Слаг статьи</b> — последний сегмент адреса: <code>https://t-j.ru/list/good-germany/</code> → <code>good-germany</code>. Префиксы вроде <code>list/</code>, <code>short/</code> отбрасываются.</li>
+        <li><b>Название статьи</b> — текст ссылки как есть, без правок.</li>
+        <li><b>Название цикла</b> — всё, что в заголовке идёт после слов «часть сборника», вместе с кавычками. В HTML-блок попадает с кавычками, в название конфига — без.</li>
+        <li>Первая статья в списке считается главной — от неё берётся слаг цикла.</li>
+      </ul>
+
+      <h3>Ошибки</h3>
+      <ul>
+        <li>Строка без ссылки — подсвечивается, статья попадает в JSON с пустым <code>slug</code>.</li>
+        <li>Повтор слага — вторая строка подсвечивается и пропускается.</li>
+        <li>Нет заголовка — внизу появится сообщение, <code>&lt;h3&gt;</code> в HTML-блоке останется пустым.</li>
+        <li>Ссылок не нашлось вообще — скорее всего, при копировании они потерялись. Скопируйте из документа ещё раз.</li>
+      </ul>
+      <p>Подсвеченные места — наведите курсор, чтобы увидеть пояснение. Проверьте названия статей глазами: экспорт из Google Docs иногда теряет буквы, инструмент это не ловит.</p>
+    </div>
+  </dialog>
+
+  <script type="module" src="nav.js"></script>
+  <script type="module" src="cycles.js"></script>
+</body>
+</html>
