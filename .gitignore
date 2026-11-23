@@ -1,3 +1,6 @@
 # Зависимости для сборки CodeMirror (см. build/)
 build/node_modules/
 build/package-lock.json
+
+# Системные файлы macOS
+.DS_Store
