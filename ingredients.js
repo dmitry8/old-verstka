@@ -21,13 +21,20 @@ function parseQuantity(raw) {
     .replace(/<[^>]*>/g, '')     // теги во второй колонке выбрасываем
     .replace(/\s+/g, ' ')
     .trim();
-  const m = text.match(/^(\d+\/\d+|\d+(?:[.,]\d+)?)\s*(.*)$/);
+  // число в начале; допускаем диапазон: «1—2», «1 – 2», «1-2»
+  const m = text.match(/^((?:\d+\/\d+|\d+(?:[.,]\d+)?)(?:\s*[—–-]\s*(?:\d+\/\d+|\d+(?:[.,]\d+)?))?)\s*(.*)$/);
   if (m) return { amount: normalizeNumber(m[1]), unit: m[2] };
   return { amount: '', unit: text };
 }
 
-// "1,5" → "1.5"; "1/2" → "0.5", "1/3" → "0.33" (дроби округляем до двух знаков)
+// "1,5" → "1.5"; "1/2" → "0.5"; "1—2" → "1—2" (тире как дали, числа нормализуем)
 function normalizeNumber(s) {
+  return s.split(/([—–-])/)
+    .map((part) => (/^[—–-]$/.test(part) ? part : normalizeSingle(part.trim())))
+    .join('');
+}
+
+function normalizeSingle(s) {
   if (s.includes('/')) {
     const [a, b] = s.split('/').map(Number);
     return b ? String(Math.round((a / b) * 100) / 100) : s;

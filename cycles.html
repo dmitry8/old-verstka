@@ -6,15 +6,17 @@
   <title>Циклы</title>
   <link rel="stylesheet" href="styles.css">
 
+  <!-- CodeMirror 6 собран локально (vendor/codemirror.bundle.js), без внешнего CDN:
+       работает офлайн и под корпоративным VPN. Пересобрать: cd build && npm run build -->
   <script type="importmap">
   {
     "imports": {
-      "@codemirror/state":     "https://esm.sh/@codemirror/state@6",
-      "@codemirror/view":      "https://esm.sh/@codemirror/view@6",
-      "@codemirror/language":  "https://esm.sh/@codemirror/language@6",
-      "@codemirror/commands":  "https://esm.sh/@codemirror/commands@6",
-      "@codemirror/lint":      "https://esm.sh/@codemirror/lint@6",
-      "@codemirror/lang-html": "https://esm.sh/@codemirror/lang-html@6"
+      "@codemirror/state":     "./vendor/codemirror.bundle.js",
+      "@codemirror/view":      "./vendor/codemirror.bundle.js",
+      "@codemirror/language":  "./vendor/codemirror.bundle.js",
+      "@codemirror/commands":  "./vendor/codemirror.bundle.js",
+      "@codemirror/lint":      "./vendor/codemirror.bundle.js",
+      "@codemirror/lang-html": "./vendor/codemirror.bundle.js"
     }
   }
   </script>

@@ -53,6 +53,45 @@ import { initTool, parseAttrs, findClosingTag, getLineIndent, isBlockContext } f
     return blocks;
   }
 
+  // ---- общее для <img>/<image>/<imgset>: парный тег и caption="…" ----
+  // Разбирает открывающий тег. Возвращает inner/fullEnd/closeText и, если что-то
+  // не так, error + message. Сам ничего не меняет.
+  // searchClosing = false для <img>: это void-тег, парный ему не ищем.
+  function readCaptionTag(html, lt, tagName, openEnd, openText, { searchClosing = true } = {}) {
+    const isSelfClosing = /\/\s*>$/.test(openText);
+    const captionAttr = parseAttrs(openText).find((a) => a.name === 'caption') || null;
+    const base = { captionAttr, isSelfClosing, openEnd, fullEnd: openEnd, inner: '', closeText: '', error: false, message: '' };
+
+    let inner = '', closeText = '', fullEnd = openEnd;
+    if (searchClosing && !isSelfClosing) {
+      const closing = findClosingTag(html, openEnd, tagName);
+      if (!closing) {
+        return { ...base, error: true, message: `Не найден парный </${tagName}> — элемент пропущен.` };
+      }
+      fullEnd = closing.end;
+      inner = html.slice(openEnd, closing.start);
+      closeText = closing.text;
+    }
+
+    const result = { ...base, fullEnd, inner, closeText };
+    if (!captionAttr) return result;
+    if (/<caption[\s>]/i.test(inner))
+      return { ...result, error: true, message: 'Конфликт: атрибут caption и тег <caption> одновременно — элемент пропущен.' };
+    if (inner.trim() !== '')
+      return { ...result, error: true, message: `Внутри <${tagName}> с caption="…" есть вложенный контент — элемент пропущен.` };
+    return result;
+  }
+
+  // Собирает новый тег с вложенным <caption>. Подпись берём как есть, без trim —
+  // иначе поедят пробелы внутри текста.
+  function buildCaptionText(newOpen, closeTag, captionAttr, block, indent) {
+    const value = captionAttr.value;
+    if (value.trim() === '') return newOpen + '</' + closeTag + '>';
+    if (block)
+      return newOpen + '\n' + indent + '  <caption>' + value + '</caption>\n' + indent + '</' + closeTag + '>';
+    return newOpen + '<caption>' + value + '</caption></' + closeTag + '>';
+  }
+
   // Главный трансформер
   function fix(html) {
     const replacements = []; // {start,end, newText, kind?, error?, message?}
@@ -493,6 +532,41 @@ import { initTool, parseAttrs, findClosingTag, getLineIndent, isBlockContext } f
         continue;
       }
 
+      // Правило 22: <imgset caption="X" …> → <imgset …> + <caption>X</caption>
+      if (/^<imgset\b/.test(head)) {
+        let j = lt + 1, q = null;
+        while (j < html.length) {
+          const ch = html[j];
+          if (q) { if (ch === q) q = null; }
+          else { if (ch === '"' || ch === "'") q = ch; else if (ch === '>') break; }
+          j++;
+        }
+        if (j >= html.length) break;
+        const isOpenEnd = j + 1;
+        const isOpenText = html.slice(lt, isOpenEnd);
+        if (!parseAttrs(isOpenText).some((a) => a.name === 'caption')) { pos = isOpenEnd; continue; }  // уже новый формат
+
+        const ct = readCaptionTag(html, lt, 'imgset', isOpenEnd, isOpenText);
+        if (ct.error) {
+          replacements.push({ start: lt, end: ct.fullEnd, newText: html.slice(lt, ct.fullEnd), error: true,
+            message: ct.message });
+          pos = ct.fullEnd;
+          continue;
+        }
+
+        const isNewOpen = isOpenText
+          .replace(/\s+caption\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'`>]+)/, '')
+          .replace(/\s*\/\s*>$/, '>');
+        const { block, indent } = isBlockContext(html, lt, ct.fullEnd);
+        const isNewText = buildCaptionText(isNewOpen, 'imgset', ct.captionAttr, block, indent);
+
+        replacements.push({ start: lt, end: ct.fullEnd, newText: isNewText, kind: 'imgset',
+          captionAttr: ct.captionAttr, isSelfClosing: ct.isSelfClosing,
+          captionMoved: ct.captionAttr.value.trim() !== '', block, indent, error: false });
+        pos = ct.fullEnd;
+        continue;
+      }
+
       // быстро проверяем <img или <image
       const isImg = head.startsWith('<img') && /<img\b/.test(head);
       const isImage = head.startsWith('<image') && /<image\b/.test(head);
@@ -512,26 +586,16 @@ import { initTool, parseAttrs, findClosingTag, getLineIndent, isBlockContext } f
       const tagName = isImg ? 'img' : 'image';
       const isSelfClosing = /\/\s*>$/.test(openText);
 
-      let fullEnd = openEnd;
-      let inner = '';
-      let closeText = '';
-      let closeStart = -1, closeEnd = -1;
-
-      if (tagName === 'image' && !isSelfClosing) {
-        const closing = findClosingTag(html, openEnd, 'image');
-        if (!closing) {
-          // битая разметка - подсветим как ошибку и идем дальше
-                   replacements.push({
-            start: lt, end: openEnd, newText: openText, error: true, openText,
-            message: `Не найден парный </image> — элемент пропущен.`
-          });
-          pos = openEnd;
-          continue;
-        }
-        closeStart = closing.start; closeEnd = closing.end; closeText = closing.text;
-        inner = html.slice(openEnd, closeStart);
-        fullEnd = closeEnd;
+      const ct = readCaptionTag(html, lt, tagName, openEnd, openText, { searchClosing: tagName === 'image' });
+      if (ct.error) {
+        replacements.push({ start: lt, end: ct.fullEnd, newText: html.slice(lt, ct.fullEnd), error: true, openText,
+          inner: ct.inner, closeText: ct.closeText, message: ct.message });
+        pos = ct.fullEnd;
+        continue;
       }
+      const fullEnd = ct.fullEnd;
+      const inner = ct.inner;
+      const closeText = ct.closeText;
 
             const attrs = parseAttrs(openText);
       const captionAttr = attrs.find(a => a.name === 'caption');
@@ -547,24 +611,8 @@ import { initTool, parseAttrs, findClosingTag, getLineIndent, isBlockContext } f
       else if (propAttr && newProp !== oldTokens.join(' ')) propAction = 'replace';
       else if (!propAttr && newProp !== '') propAction = 'add';
 
-      // 5. уже новый формат: <image> без caption-атрибута но с <caption> внутри или просто без caption -> пропускаем
-      const hasInnerCaption = /<caption[\s>]/i.test(inner);
-      // уже новый формат и prop менять не надо — пропускаем
+      // уже новый формат: <image> без caption-атрибута и без правок prop — пропускаем
       if (tagName === 'image' && !captionAttr && !isSelfClosing && !propAction) {
-        pos = fullEnd;
-        continue;
-      }
-
-      // 8. корнер-кейсы -> ошибка, не трогаем, подсвечиваем
-      if (captionAttr && hasInnerCaption) {
-              replacements.push({ start: lt, end: fullEnd, newText: html.slice(lt, fullEnd), error: true, openText, inner, closeText,
-          message: `Конфликт: атрибут caption и тег <caption> одновременно — элемент пропущен.` });
-        pos = fullEnd;
-        continue;
-      }
-      if (captionAttr && inner.trim() !== '') {
-                replacements.push({ start: lt, end: fullEnd, newText: html.slice(lt, fullEnd), error: true, openText, inner, closeText,
-          message: `Внутри <image> с caption="…" есть вложенный контент — элемент пропущен.` });
         pos = fullEnd;
         continue;
       }
@@ -601,13 +649,7 @@ import { initTool, parseAttrs, findClosingTag, getLineIndent, isBlockContext } f
       const { block, indent } = isBlockContext(html, lt, fullEnd);
       let newText;
       if (needsCaptionMove) {
-        const captionValue = captionAttr.value; // сырое содержимое без внешних кавычек
-        if (block) {
-          const innerIndent = indent + '  ';
-          newText = newOpen + '\n' + innerIndent + '<caption>' + captionValue + '</caption>\n' + indent + '</image>';
-        } else {
-          newText = newOpen + '<caption>' + captionValue + '</caption></image>';
-        }
+        newText = buildCaptionText(newOpen, 'image', captionAttr, block, indent);
       } else {
         // без caption просто парный тег
         if (block && inner === '' && isSelfClosing) {
@@ -898,6 +940,21 @@ import { initTool, parseAttrs, findClosingTag, getLineIndent, isBlockContext } f
       }
       // </author> был в исходнике — не подсвечиваем; появился из /> — подсвечиваем
       out.push(r.aSelfClosing ? {text: '</author>', cls: 'hl-added'} : {text: '</author>'});
+      return out;
+    }
+    if (r.kind === 'imgset') {
+      const closeIdx = r.isSelfClosing ? newText.lastIndexOf('</imgset>') : -1;
+      const body = closeIdx === -1 ? newText : newText.slice(0, closeIdx);
+      const o = body.indexOf('<caption>'), c = body.indexOf('</caption>', o);
+      if (o === -1 || c === -1) return [{text: newText}];
+      const out = [
+        {text: newText.slice(0, o)},
+        {text: '<caption>', cls: 'hl-added'},
+        {text: newText.slice(o + 9, c)},
+        {text: '</caption>', cls: 'hl-added'},
+        {text: newText.slice(c + 10, closeIdx === -1 ? newText.length : closeIdx)},
+      ];
+      if (closeIdx !== -1) out.push({text: '</imgset>', cls: 'hl-added'});
       return out;
     }
     if (r.kind === 'hl') {

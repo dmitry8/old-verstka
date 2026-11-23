@@ -6,16 +6,17 @@
   <title>Переверстка старого синтаксиса</title>
   <link rel="stylesheet" href="styles.css">
 
-  <!-- CodeMirror 6 с CDN jsDelivr, без сборки: зависимости подтягиваются автоматически -->
+  <!-- CodeMirror 6 собран локально (vendor/codemirror.bundle.js), без внешнего CDN:
+       работает офлайн и под корпоративным VPN. Пересобрать: cd build && npm run build -->
   <script type="importmap">
   {
     "imports": {
-      "@codemirror/state":     "https://esm.sh/@codemirror/state@6",
-      "@codemirror/view":      "https://esm.sh/@codemirror/view@6",
-      "@codemirror/language":  "https://esm.sh/@codemirror/language@6",
-      "@codemirror/commands":  "https://esm.sh/@codemirror/commands@6",
-      "@codemirror/lint":      "https://esm.sh/@codemirror/lint@6",
-      "@codemirror/lang-html": "https://esm.sh/@codemirror/lang-html@6"
+      "@codemirror/state":     "./vendor/codemirror.bundle.js",
+      "@codemirror/view":      "./vendor/codemirror.bundle.js",
+      "@codemirror/language":  "./vendor/codemirror.bundle.js",
+      "@codemirror/commands":  "./vendor/codemirror.bundle.js",
+      "@codemirror/lint":      "./vendor/codemirror.bundle.js",
+      "@codemirror/lang-html": "./vendor/codemirror.bundle.js"
     }
   }
   </script>
@@ -52,11 +53,14 @@
     </div>
 
     <div class="editors">
+    <div class="input-col">
     <section class="pane">
       <div class="pane-body">
         <div id="input"></div>
       </div>
     </section>
+    <div id="messages" class="messages" hidden></div>
+    </div>
 
     <section class="pane" id="output-pane">
       <div class="pane-body">

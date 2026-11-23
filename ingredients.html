@@ -6,15 +6,17 @@
   <title>Счётчик ингредиентов</title>
   <link rel="stylesheet" href="styles.css">
 
+  <!-- CodeMirror 6 собран локально (vendor/codemirror.bundle.js), без внешнего CDN:
+       работает офлайн и под корпоративным VPN. Пересобрать: cd build && npm run build -->
   <script type="importmap">
   {
     "imports": {
-      "@codemirror/state":     "https://esm.sh/@codemirror/state@6",
-      "@codemirror/view":      "https://esm.sh/@codemirror/view@6",
-      "@codemirror/language":  "https://esm.sh/@codemirror/language@6",
-      "@codemirror/commands":  "https://esm.sh/@codemirror/commands@6",
-      "@codemirror/lint":      "https://esm.sh/@codemirror/lint@6",
-      "@codemirror/lang-html": "https://esm.sh/@codemirror/lang-html@6"
+      "@codemirror/state":     "./vendor/codemirror.bundle.js",
+      "@codemirror/view":      "./vendor/codemirror.bundle.js",
+      "@codemirror/language":  "./vendor/codemirror.bundle.js",
+      "@codemirror/commands":  "./vendor/codemirror.bundle.js",
+      "@codemirror/lint":      "./vendor/codemirror.bundle.js",
+      "@codemirror/lang-html": "./vendor/codemirror.bundle.js"
     }
   }
   </script>
@@ -86,10 +88,11 @@
 
       <h3>Таблица из трёх колонок (с группами)</h3>
       <ul>
-        <li>Строка с тремя ячейками открывает новую группу: первая ячейка — название группы, две остальные — первый ингредиент.</li>
-        <li>Строки с двумя ячейками попадают в текущую группу.</li>
-        <li>Если первая строка таблицы — с двумя ячейками, группа создаётся с пустым названием, строка подсвечивается.</li>
-        <li>Больше трёх ячеек в строке быть не должно — такая таблица пропускается целиком.</li>
+        <li>Три ячейки, первая заполнена — начало новой группы: первая ячейка становится названием группы, две остальные — первым ингредиентом.</li>
+        <li>Три ячейки, первая пустая — ингредиент добавляется в текущую группу.</li>
+        <li>Две ячейки — тоже ингредиент в текущую группу.</li>
+        <li>Если группа ещё не открыта (таблица начинается со строки в две ячейки или с пустой первой), создаётся группа с пустым названием, строка подсвечивается.</li>
+        <li>Больше трёх ячеек в строке быть не должно — такая таблица пропускается целиком, под полем появится сообщение.</li>
       </ul>
 
       <h3>Как разбирается количество</h3>
@@ -97,6 +100,7 @@
         <li><code>160 г</code> → <code>amount="160" unit="г"</code> — число в начале уходит в amount, остальное в unit.</li>
         <li><code>1,5 ст. л.</code> → <code>amount="1.5"</code> — запятая меняется на точку.</li>
         <li><code>1/2 стакана</code> → <code>amount="0.5"</code>, <code>1/3</code> → <code>0.33</code> — дроби переводятся в десятичную запись.</li>
+        <li><code>1—2 зубчика</code> → <code>amount="1—2" unit="зубчика"</code> — диапазон переносится как есть, тире не меняется.</li>
         <li><code>По вкусу</code>, <code>щепотка</code> → <code>amount="" unit="По вкусу"</code> — текст без числа целиком уходит в unit.</li>
         <li><code>3</code> → <code>amount="3" unit=""</code> — число без единицы: ячейка подсвечивается, unit нужно заполнить руками.</li>
       </ul>
